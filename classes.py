@@ -6,7 +6,9 @@ import pandas as pd
 from openpyxl import load_workbook
 from PIL import Image, ImageEnhance
 import pytesseract
+from docx import Document
 from difflib import get_close_matches
+from openpyxl.styles import numbers
 
 
 class Pdf_Worker:
@@ -149,18 +151,12 @@ class File_Generate:
                      spec_filename: str,
                      output_filename: str,
                      photos_folder: str = "PHOTOS") -> bool:
-        """
-        Генерирует заполненный XLSX файл на основе шаблона.
-
-        :param template_filename: Шаблон (examples/)
-        :param invoice_filename: Файл invoice (xlsx_files/)
-        :param ref_filename: Справочник (examples/)
-        :param pl_filename: Файл PL.xlsx (xlsx_files/)
-        :param spec_filename: Specifications_sell.xlsx (xlsx_files/)
-        :param output_filename: Итоговый файл (examples/)
-        :param photos_folder: Папка с фото товаров для OCR
-        :return: True если успешно сохранено
-        """
+        import os, re, math
+        from difflib import get_close_matches
+        import pandas as pd
+        from openpyxl import load_workbook
+        from PIL import Image, ImageEnhance
+        import pytesseract
 
         # Пути к файлам
         template_path = os.path.join("examples", template_filename)
@@ -190,13 +186,14 @@ class File_Generate:
             return values.fillna("").tolist()
 
         # --- Данные из PL.xlsx ---
-        pl_col_B = safe_column(pl_df, 1, replace_kan=True)
-        pl_col_E = safe_column(pl_df, 4, numeric=True)
-        pl_col_D = safe_column(pl_df, 3, numeric=True)
-        pl_col_H = safe_column(pl_df, 7, numeric=True)
-        pl_col_I = safe_column(pl_df, 8, numeric=True)
+        pl_col_B = safe_column(pl_df, 1, replace_kan=True)   # D
+        pl_col_E = safe_column(pl_df, 4, numeric=True)       # G
+        pl_col_D = safe_column(pl_df, 3, numeric=True)       # H
+        pl_col_H = safe_column(pl_df, 7, numeric=True)       # J (округлять по твоему правилу или как было)
+        pl_col_I = safe_column(pl_df, 8, numeric=True)       # K
 
         # --- Данные из Specifications_sell.xlsx ---
+        import re
         spec_values = [
             float(re.sub(r'[^0-9,]', '', str(x)).replace(',', '.')) if re.search(r'\d', str(x)) else 0
             for x in spec_df.iloc[:, 4]
@@ -210,33 +207,40 @@ class File_Generate:
         ws = wb.active
         row_start = 18
 
-        # --- CustomsCode -> название ---
+        # --- CustomsCode -> название (в C) ---
         for idx, code in enumerate(invoice_df["CustomsCode"].fillna("").tolist()):
             ws.cell(row=row_start + idx, column=3, value=ref_map.get(code, ""))
 
         # --- PL.xlsx колонки ---
         for idx, val in enumerate(pl_col_B):
-            ws.cell(row=row_start + idx, column=4, value=val)
-        for idx, val in enumerate(pl_col_E):
-            ws.cell(row=row_start + idx, column=7, value=val)
-        for idx, val in enumerate(pl_col_D):
-            ws.cell(row=row_start + idx, column=8, value=val)
-        for idx, val in enumerate(pl_col_H):
-            ws.cell(row=row_start + idx, column=10, value=math.ceil(val) if val >= 0 else math.floor(val))
-        for idx, val in enumerate(pl_col_I):
-            ws.cell(row=row_start + idx, column=11, value=math.ceil(val) if val >= 0 else math.floor(val))
+            ws.cell(row=row_start + idx, column=4, value=val)  # D
 
-        # --- Specifications_sell.xlsx ---
+        for idx, val in enumerate(pl_col_E):
+            ws.cell(row=row_start + idx, column=7, value=val)  # G
+
+        for idx, val in enumerate(pl_col_D):
+            ws.cell(row=row_start + idx, column=8, value=val)  # H
+
+        for idx, val in enumerate(pl_col_H):
+            # Округление как раньше (ceil для >=0 и floor для <0). Если нужно "0.5 вверх, 0.49 вниз" — замени тут.
+            ws.cell(row=row_start + idx, column=10, value=math.ceil(val) if val >= 0 else math.floor(val))  # J
+
+        for idx, val in enumerate(pl_col_I):
+            ws.cell(row=row_start + idx, column=11, value=math.ceil(val) if val >= 0 else math.floor(val))  # K# --- Specifications_sell.xlsx в L ---
         for idx, val in enumerate(spec_values):
             ws.cell(row=row_start + idx, column=12, value=val)
 
-        # --- Invoice, колонка H ---
+        # --- Invoice, колонка H в N ---
         for idx, val in enumerate(invoice_col_H):
             ws.cell(row=row_start + idx, column=14, value=val)
 
         # --- Заполнение колонки E через OCR ---
+        from difflib import get_close_matches
         for idx, product_name in enumerate(pl_col_B):
-            candidate_folders = os.listdir(photos_folder)
+            try:
+                candidate_folders = os.listdir(photos_folder)
+            except FileNotFoundError:
+                candidate_folders = []
             best_match = get_close_matches(product_name, candidate_folders, n=1, cutoff=0.5)
             if not best_match:
                 continue
@@ -249,7 +253,7 @@ class File_Generate:
                 image_path = os.path.join(folder_path, jpg)
                 try:
                     img = Image.open(image_path)
-                    # Увеличиваем и повышаем контраст для OCR
+                    # Улучшаем картинку для OCR
                     img = img.resize((img.width * 2, img.height * 2))
                     enhancer = ImageEnhance.Contrast(img)
                     img = enhancer.enhance(3.0)
@@ -261,7 +265,98 @@ class File_Generate:
                         break
                 except Exception:
                     continue
-            ws.cell(row=row_start + idx, column=5, value=made_in_value)
+            ws.cell(row=row_start + idx, column=5, value=made_in_value)  # E
+
+        # --- F = G + H (численно, без формул) ---
+        def _to_float(x):
+            if x is None:
+                return None
+            if isinstance(x, (int, float)):
+                return float(x)
+            s = str(x).strip()
+            if s == "" or s.lower() in ("nan", "none"):
+                return None
+            s = s.replace(" ", "").replace(",", ".")
+            try:
+                return float(s)
+            except Exception:
+                return None
+
+        # Сколько строк считать: ориентируемся на G/H
+        max_len = max(len(pl_col_E), len(pl_col_D))
+        for idx in range(max_len):
+            r = row_start + idx
+            g_val = _to_float(ws.cell(row=r, column=7).value)  # G
+            h_val = _to_float(ws.cell(row=r, column=8).value)  # H
+            if g_val is None and h_val is None:
+                continue
+            total = (g_val or 0.0) + (h_val or 0.0)
+            cell_f = ws.cell(row=r, column=6, value=total)     # F
+            cell_f.number_format = "0.00"  # два знака после запятой
 
         wb.save(output_path)
+        return True
+
+    
+class Docx_Filler:
+    """
+    Класс для заполнения таблицы в Word (.docx) данными из Excel через openpyxl.
+    """
+
+    def __init__(self):
+        pass
+
+    def fill_table_from_excel(self, template_path: str, excel_path: str, output_path: str, table_index: int = 0) -> bool:
+        """
+        Берет значения из Excel и заполняет таблицу Word:
+        - D18-D47 → 3-я колонка
+        - E18-E47 → 4-я колонка
+        - F18-F47 → 5-я колонка
+        - N18-N47 → 6-я колонка
+        Начало вставки со второй строки Word таблицы.
+
+        :param template_path: путь к шаблону Word
+        :param excel_path: путь к Excel-файлу
+        :param output_path: путь для сохранения Word
+        :param table_index: индекс таблицы в Word
+        :return: True если успешно
+        """
+        if not os.path.exists(template_path):
+            print(f"[ERROR] Шаблон Word {template_path} не найден")
+            return False
+        if not os.path.exists(excel_path):
+            print(f"[ERROR] Excel-файл {excel_path} не найден")
+            return False
+
+        # --- Загружаем Excel ---
+        wb = load_workbook(excel_path, data_only=True)
+        ws = wb.active
+
+        # --- Читаем диапазоны ---
+        values_D = [str(ws[f"D{row}"].value or "") for row in range(18, 48)]
+        values_E = [str(ws[f"E{row}"].value or "") for row in range(18, 48)]
+        values_F = [str(ws[f"F{row}"].value or "Error") for row in range(18, 48)]
+        values_N = [str(ws[f"N{row}"].value or "") for row in range(18, 48)]
+        # --- Загружаем Word ---
+        doc = Document(template_path)
+
+        try:
+            table = doc.tables[table_index]
+        except IndexError:
+            print(f"[ERROR] Таблица с индексом {table_index} не найдена в шаблоне Word")
+            return False
+
+        # --- Вставляем значения по колонкам ---
+        for i in range(len(values_D)):
+            row_index = i + 1  # начинаем со второй строки
+            if row_index >= len(table.rows):
+                print(f"[WARNING] Недостаточно строк в таблице для строки {row_index+1}")
+                continue
+            table.rows[row_index].cells[2].text = values_D[i]  # 3-я колонка
+            table.rows[row_index].cells[3].text = values_E[i]  # 4-я колонка
+            table.rows[row_index].cells[4].text = values_F[i]  # 5-я колонка
+            table.rows[row_index].cells[5].text = values_N[i]  # 6-я колонка
+
+        # --- Сохраняем результат ---
+        doc.save(output_path)
         return True
