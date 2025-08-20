@@ -4,6 +4,9 @@ import math
 import pdfplumber
 import pandas as pd
 from openpyxl import load_workbook
+from PIL import Image, ImageEnhance
+import pytesseract
+from difflib import get_close_matches
 
 
 class Pdf_Worker:
@@ -131,6 +134,7 @@ class File_Generate:
     - Заполнение данных из PL.xlsx
     - Заполнение данных из Specifications_sell.xlsx
     - Заполнение колонки N значениями из invoice (колонка H)
+    - Авто-заполнение колонки E через OCR из изображений
     - Математическое округление для определённых колонок
     """
 
@@ -143,7 +147,8 @@ class File_Generate:
                      ref_filename: str,
                      pl_filename: str,
                      spec_filename: str,
-                     output_filename: str) -> bool:
+                     output_filename: str,
+                     photos_folder: str = "PHOTOS") -> bool:
         """
         Генерирует заполненный XLSX файл на основе шаблона.
 
@@ -153,6 +158,7 @@ class File_Generate:
         :param pl_filename: Файл PL.xlsx (xlsx_files/)
         :param spec_filename: Specifications_sell.xlsx (xlsx_files/)
         :param output_filename: Итоговый файл (examples/)
+        :param photos_folder: Папка с фото товаров для OCR
         :return: True если успешно сохранено
         """
 
@@ -170,12 +176,9 @@ class File_Generate:
         pl_df = pd.read_excel(pl_path)
         spec_df = pd.read_excel(spec_path)
 
-        # --- Справочник CustomsCode -> Название ---
         ref_map = dict(zip(ref_df[3], ref_df[2]))
 
-        # --- Универсальная функция для получения колонки ---
         def safe_column(df, col_index, numeric=False, replace_kan=False):
-            """Возвращает все значения колонки, начиная с первой строки данных, корректно обрабатывая пустые/NaN"""
             values = df.iloc[:, col_index]
             if replace_kan:
                 values = values.astype(str).str.replace("Kan", "").str.strip()
@@ -207,38 +210,58 @@ class File_Generate:
         ws = wb.active
         row_start = 18
 
-        # C18: CustomsCode -> Название
+        # --- CustomsCode -> название ---
         for idx, code in enumerate(invoice_df["CustomsCode"].fillna("").tolist()):
             ws.cell(row=row_start + idx, column=3, value=ref_map.get(code, ""))
 
-        # D18: PL B
+        # --- PL.xlsx колонки ---
         for idx, val in enumerate(pl_col_B):
             ws.cell(row=row_start + idx, column=4, value=val)
-
-        # G18: PL E
         for idx, val in enumerate(pl_col_E):
             ws.cell(row=row_start + idx, column=7, value=val)
-
-        # H18: PL D
         for idx, val in enumerate(pl_col_D):
             ws.cell(row=row_start + idx, column=8, value=val)
-
-        # J18: PL H с округлением
         for idx, val in enumerate(pl_col_H):
             ws.cell(row=row_start + idx, column=10, value=math.ceil(val) if val >= 0 else math.floor(val))
-
-        # K18: PL I с округлением
         for idx, val in enumerate(pl_col_I):
             ws.cell(row=row_start + idx, column=11, value=math.ceil(val) if val >= 0 else math.floor(val))
 
-        # L18: Specifications_sell.xlsx
+        # --- Specifications_sell.xlsx ---
         for idx, val in enumerate(spec_values):
             ws.cell(row=row_start + idx, column=12, value=val)
 
-        # N18: Invoice, колонка H
+        # --- Invoice, колонка H ---
         for idx, val in enumerate(invoice_col_H):
             ws.cell(row=row_start + idx, column=14, value=val)
 
-        # --- Сохраняем итоговый файл ---
+        # --- Заполнение колонки E через OCR ---
+        for idx, product_name in enumerate(pl_col_B):
+            candidate_folders = os.listdir(photos_folder)
+            best_match = get_close_matches(product_name, candidate_folders, n=1, cutoff=0.5)
+            if not best_match:
+                continue
+            folder_path = os.path.join(photos_folder, best_match[0])
+            if not os.path.isdir(folder_path):
+                continue
+            jpg_files = [f for f in os.listdir(folder_path) if f.lower().endswith(".jpg")][:2]
+            made_in_value = "EU"  # дефолт
+            for jpg in jpg_files:
+                image_path = os.path.join(folder_path, jpg)
+                try:
+                    img = Image.open(image_path)
+                    # Увеличиваем и повышаем контраст для OCR
+                    img = img.resize((img.width * 2, img.height * 2))
+                    enhancer = ImageEnhance.Contrast(img)
+                    img = enhancer.enhance(3.0)
+                    text = pytesseract.image_to_string(img)
+                    match = re.search(r"made\s*in\s*([A-Za-z\s]+)", text, re.IGNORECASE)
+                    if match:
+                        country = match.group(1).strip()
+                        made_in_value = country if country.upper() != "EU" else "EU"
+                        break
+                except Exception:
+                    continue
+            ws.cell(row=row_start + idx, column=5, value=made_in_value)
+
         wb.save(output_path)
         return True
