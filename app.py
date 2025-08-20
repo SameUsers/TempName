@@ -1,7 +1,7 @@
 import os
 import time
 import telebot
-from classes import Pdf_Worker
+from classes import Pdf_Worker, File_Generate  # <-- подключаем оба класса
 
 TOKEN = "7235411692:AAFGufOh_Jmd5Z5MSpPGf7Cmhjdc6VOq4ho"
 bot = telebot.TeleBot(TOKEN)
@@ -12,6 +12,7 @@ XLSX_FOLDER = "xlsx_files"
 os.makedirs(XLSX_FOLDER, exist_ok=True)
 
 worker = Pdf_Worker()
+file_gen = File_Generate()  # <-- создаем экземпляр класса для генерации
 
 @bot.message_handler(commands=['start'])
 def start(message):
@@ -62,10 +63,29 @@ def handle_files(message):
     update_progress(100)
     time.sleep(0.5)  # небольшая задержка, чтобы пользователь увидел 100%
 
-    # Финальное сообщение
+    # Финальное сообщение и дальнейшая генерация
     if success:
         bot.edit_message_text(chat_id=message.chat.id, message_id=progress_msg.message_id,
                               text=f"{doc.file_name} успешно преобразован в XLSX:\n{xlsx_path}")
+
+        # --- Генерация итогового файла ---
+        try:
+            output_filename = "123456789_invoice_sell_filled.xlsx"
+            file_gen.fill_invoice(
+                template_filename="123456789_invoice_sell.xlsx",
+                invoice_filename=os.path.basename(xlsx_path),  # наш созданный XLSX в xlsx_files
+                ref_filename="Справочник.xlsx",
+                pl_filename="PL.xlsx",
+                output_filename=output_filename
+            )
+
+            # Шаг 3: Отправка результата пользователю
+            output_path = os.path.join("examples", output_filename)
+            with open(output_path, "rb") as f:
+                bot.send_document(message.chat.id, f, caption="Готовый файл с заполненными названиями товаров")
+        except Exception as e:
+            bot.send_message(message.chat.id, f"Ошибка при генерации итогового файла: {e}")
+
     else:
         bot.edit_message_text(chat_id=message.chat.id, message_id=progress_msg.message_id,
                               text=f"Не удалось извлечь таблицы из {doc.file_name}.")
