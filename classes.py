@@ -1,6 +1,5 @@
 import os
 import re
-import math
 import pdfplumber
 import pandas as pd
 from openpyxl import load_workbook
@@ -9,6 +8,12 @@ import pytesseract
 from docx import Document
 from difflib import get_close_matches
 from openpyxl.styles import numbers
+import tempfile
+from bs4 import BeautifulSoup
+import urllib.parse
+from docx.shared import Cm
+import requests
+
 
 
 class Pdf_Worker:
@@ -290,7 +295,7 @@ class File_Generate:
             h_val = _to_float(ws.cell(row=r, column=8).value)  # H
             if g_val is None and h_val is None:
                 continue
-            total = (g_val or 0.0) + (h_val or 0.0)
+            total = (g_val or 0.0) * (h_val or 0.0)
             cell_f = ws.cell(row=r, column=6, value=total)     # F
             cell_f.number_format = "0.00"  # два знака после запятой
 
@@ -306,20 +311,42 @@ class Docx_Filler:
     def __init__(self):
         pass
 
-    def fill_table_from_excel(self, template_path: str, excel_path: str, output_path: str, table_index: int = 0) -> bool:
+    def get_official_link(self, product_name: str) -> str:
         """
-        Берет значения из Excel и заполняет таблицу Word:
-        - D18-D47 → 3-я колонка
-        - E18-E47 → 4-я колонка
-        - F18-F47 → 5-я колонка
-        - N18-N47 → 6-я колонка
-        Начало вставки со второй строки Word таблицы.
+        Ищет в Google "<product_name> official" и возвращает первую ссылку из результатов.
+        """
+        query = urllib.parse.quote(f"{product_name} official")
+        url = f"https://www.google.com/search?q={query}"
 
-        :param template_path: путь к шаблону Word
-        :param excel_path: путь к Excel-файлу
-        :param output_path: путь для сохранения Word
-        :param table_index: индекс таблицы в Word
-        :return: True если успешно
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                          "AppleWebKit/537.36 (KHTML, like Gecko) "
+                          "Chrome/115.0.0.0 Safari/537.36"
+        }
+
+        try:
+            response = requests.get(url, headers=headers, timeout=10)
+            response.raise_for_status()
+            soup = BeautifulSoup(response.text, "html.parser")
+            
+            # Парсим ссылки из результатов поиска Google
+            for a in soup.select("a"):
+                href = a.get("href")
+                if href and href.startswith("/url?q="):
+                    link = urllib.parse.parse_qs(urllib.parse.urlparse(href).query).get("q")
+                    if link:
+                        print(link[0])
+                        return link[0]  # первая найденная ссылка
+            return ""
+        except Exception as e:
+            print(f"[WARN] Не удалось найти ссылку для '{product_name}': {e}")
+            return ""
+
+    def fill_table_from_excel(self, template_path: str, excel_path: str,
+                              output_path: str, photos_folder: str = "PHOTOS",
+                              table_index: int = 0) -> bool:
+        """
+        Заполняет Word таблицу данными из Excel + фото + ссылки.
         """
         if not os.path.exists(template_path):
             print(f"[ERROR] Шаблон Word {template_path} не найден")
@@ -332,31 +359,67 @@ class Docx_Filler:
         wb = load_workbook(excel_path, data_only=True)
         ws = wb.active
 
-        # --- Читаем диапазоны ---
         values_D = [str(ws[f"D{row}"].value or "") for row in range(18, 48)]
         values_E = [str(ws[f"E{row}"].value or "") for row in range(18, 48)]
-        values_F = [str(ws[f"F{row}"].value or "Error") for row in range(18, 48)]
+        values_F = [str(ws[f"F{row}"].value or "") for row in range(18, 48)]
         values_N = [str(ws[f"N{row}"].value or "") for row in range(18, 48)]
-        # --- Загружаем Word ---
-        doc = Document(template_path)
 
+        doc = Document(template_path)
         try:
             table = doc.tables[table_index]
         except IndexError:
             print(f"[ERROR] Таблица с индексом {table_index} не найдена в шаблоне Word")
             return False
 
-        # --- Вставляем значения по колонкам ---
         for i in range(len(values_D)):
             row_index = i + 1  # начинаем со второй строки
             if row_index >= len(table.rows):
                 print(f"[WARNING] Недостаточно строк в таблице для строки {row_index+1}")
                 continue
-            table.rows[row_index].cells[2].text = values_D[i]  # 3-я колонка
-            table.rows[row_index].cells[3].text = values_E[i]  # 4-я колонка
-            table.rows[row_index].cells[4].text = values_F[i]  # 5-я колонка
-            table.rows[row_index].cells[5].text = values_N[i]  # 6-я колонка
 
-        # --- Сохраняем результат ---
+            # --- Первая колонка: гиперссылка на официальный сайт ---
+            link = self.get_official_link(values_D[i])
+            if link:
+                cell = table.rows[row_index].cells[1]
+                cell.text = ""
+                run = cell.paragraphs[0].add_run(values_D[i])
+                run.hyperlink = link
+            else:
+                table.rows[row_index].cells[1].text = values_D[i]
+
+            # --- Остальные текстовые колонки ---
+            table.rows[row_index].cells[2].text = values_D[i]
+            table.rows[row_index].cells[3].text = values_E[i]
+            table.rows[row_index].cells[4].text = values_F[i]
+            table.rows[row_index].cells[5].text = values_N[i]
+
+            # --- Фото или текст в 6 колонку ---
+            folder_candidates = os.listdir(photos_folder) if os.path.exists(photos_folder) else []
+            best_match = get_close_matches(values_D[i], folder_candidates, n=1, cutoff=0.5)
+
+            if best_match:
+                folder_path = os.path.join(photos_folder, best_match[0])
+                if os.path.isdir(folder_path):
+                    jpg_files = [f for f in os.listdir(folder_path) if f.lower().endswith(".jpg")][:2]
+                    if jpg_files:
+                        images = [Image.open(os.path.join(folder_path, f)) for f in jpg_files]
+                        heights = [im.height for im in images]
+                        max_h = max(heights)
+                        total_w = sum(im.width for im in images)
+                        merged = Image.new("RGB", (total_w, max_h), (255, 255, 255))
+                        x_offset = 0
+                        for im in images:
+                            merged.paste(im, (x_offset, 0))
+                            x_offset += im.width
+                        tmp_path = tempfile.mktemp(suffix=".png")
+                        merged.save(tmp_path)
+                        cell = table.rows[row_index].cells[6]  # 6-я колонка
+                        cell.text = ""
+                        run = cell.paragraphs[0].add_run()
+                        run.add_picture(tmp_path, width=Cm(5.6), height=Cm(3.8))
+                        continue
+
+            table.rows[row_index].cells[6].text = values_N[i]  # если фото нет
+
         doc.save(output_path)
         return True
