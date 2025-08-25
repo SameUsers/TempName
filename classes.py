@@ -1,6 +1,5 @@
 import os
 import re
-import math
 import pdfplumber
 import pandas as pd
 from openpyxl import load_workbook
@@ -134,8 +133,8 @@ class FileGenerate:
     
 
     def fill_invoice(self, template_filename: str, invoice_filename: str, ref_filename: str,
-                     pl_filename: str, spec_filename: str, output_filename: str,
-                     photos_folder: str = "PHOTOS") -> bool:
+                 pl_filename: str, spec_filename: str, output_filename: str,
+                 photos_folder: str = "PHOTOS") -> bool:
         template_path = os.path.join("examples", template_filename)
         invoice_path = os.path.join("xlsx_files", invoice_filename)
         ref_path = os.path.join("examples", ref_filename)
@@ -160,20 +159,38 @@ class FileGenerate:
                     for x in values
                 ]
             return values.fillna("").tolist()
+        
+        # Сравниваем количество строк ДО обработки
+        spec_col_B_raw = spec_df.iloc[:, 1].dropna().tolist() 
+        invoice_col_C_raw = invoice_df.iloc[:, 2].dropna().tolist()
+        spec_count = len(spec_col_B_raw)
+        invoice_count = len(invoice_col_C_raw)
+        
+        if spec_count != invoice_count:
+            print(f"ВНИМАНИЕ: Несоответствие количества строк!")
+            print(f"Specification_sell.xlsx (колонка B): {spec_count} строк")
+            print(f"Invoice_purchase.xlsx (колонка C): {invoice_count} строк")
+            
+            min_count = min(spec_count, invoice_count)
+            print(f"Будет обработано: {min_count} строк")
+        else:
+            min_count = spec_count
+            print(f"Всё в порядке. Списки равны. Значение {min_count}")
 
-        pl_col_B = safe_column(pl_df, 1, replace_kan=True)
-        pl_col_E = safe_column(pl_df, 4, numeric=True)
-        pl_col_D = safe_column(pl_df, 3, numeric=True)
-        pl_col_H = safe_column(pl_df, 7, numeric=True)
-        pl_col_I = safe_column(pl_df, 8, numeric=True)
+        # ОБРЕЗАЕМ данные до min_count чтобы избежать ошибок
+        pl_col_B = safe_column(pl_df, 1, replace_kan=True)[:min_count]
+        pl_col_E = safe_column(pl_df, 4, numeric=True)[:min_count]
+        pl_col_D = safe_column(pl_df, 3, numeric=True)[:min_count]
+        pl_col_H = safe_column(pl_df, 7, numeric=True)[:min_count]
+        pl_col_I = safe_column(pl_df, 8, numeric=True)[:min_count]
 
         spec_values = [
             float(re.sub(r'[^0-9,]', '', str(x)).replace(',', '.')) if re.search(r'\d', str(x)) else 0
             for x in spec_df.iloc[:, 4]
-        ]
+        ][:min_count]
 
-        invoice_col_H = safe_column(invoice_df, 7)
-        spec_col_B = spec_df.iloc[:, 1].tolist()
+        invoice_col_H = safe_column(invoice_df, 7)[:min_count]
+        spec_col_B = spec_df.iloc[:, 1].tolist()[:min_count]  # Теперь это обрезанный список
 
         wb = load_workbook(template_path)
         ws = wb.active
@@ -181,7 +198,9 @@ class FileGenerate:
 
         yellow_fill = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
 
-        for idx, code in enumerate(invoice_df["CustomsCode"].fillna("").tolist()):
+        # Ограничиваем цикл min_count
+        for idx in range(min_count):
+            code = invoice_df["CustomsCode"].fillna("").tolist()[idx] if idx < len(invoice_df) else ""
             value_c = ref_map.get(code, "")
             row_excel = row_start + idx
 
@@ -196,32 +215,41 @@ class FileGenerate:
 
             ws.cell(row=row_excel, column=3, value=value_c)
 
-        for idx, val in enumerate(spec_df.iloc[:, 1]):
+        # Все остальные циклы также ограничиваем min_count
+        for idx in range(min_count):
+            val = spec_df.iloc[:, 1].tolist()[idx] if idx < len(spec_df) else ""
             text = str(val) if val is not None else ""
             text = text.replace("\n", " ").replace("\r", " ")
             text = re.sub(r"[А-Яа-яЁё]", "", text)
             text = re.sub(r"\s+", " ", text).strip()
             ws.cell(row=row_start + idx, column=4, value=text)
 
-        for idx, val in enumerate(pl_col_E):
+        for idx in range(min_count):
+            val = pl_col_E[idx] if idx < len(pl_col_E) else 0
             ws.cell(row=row_start + idx, column=7, value=val)
 
-        for idx, val in enumerate(pl_col_D):
+        for idx in range(min_count):
+            val = pl_col_D[idx] if idx < len(pl_col_D) else 0
             ws.cell(row=row_start + idx, column=8, value=val)
 
-        for idx, val in enumerate(pl_col_H):
+        for idx in range(min_count):
+            val = pl_col_H[idx] if idx < len(pl_col_H) else 0
             ws.cell(row=row_start + idx, column=10, value=self.round_half_up_int(val))
 
-        for idx, val in enumerate(pl_col_I):
+        for idx in range(min_count):
+            val = pl_col_I[idx] if idx < len(pl_col_I) else 0
             ws.cell(row=row_start + idx, column=11, value=self.round_half_up_int(val))
 
-        for idx, val in enumerate(spec_values):
+        for idx in range(min_count):
+            val = spec_values[idx] if idx < len(spec_values) else 0
             ws.cell(row=row_start + idx, column=12, value=val)
 
-        for idx, val in enumerate(invoice_col_H):
+        for idx in range(min_count):
+            val = invoice_col_H[idx] if idx < len(invoice_col_H) else ""
             ws.cell(row=row_start + idx, column=14, value=val)
 
-        for idx, product_name in enumerate(pl_col_B):
+        for idx in range(min_count):
+            product_name = pl_col_B[idx] if idx < len(pl_col_B) else ""
             try:
                 candidate_folders = os.listdir(photos_folder)
             except FileNotFoundError:
@@ -251,8 +279,6 @@ class FileGenerate:
                     continue
             ws.cell(row=row_start + idx, column=5, value=made_in_value)
 
-        
-
         def _to_float(x):
             if x is None:
                 return None
@@ -267,8 +293,8 @@ class FileGenerate:
             except Exception:
                 return None
 
-        max_len = max(len(pl_col_E), len(pl_col_D))
-        for idx in range(max_len):
+        # Также ограничиваем этот цикл
+        for idx in range(min_count):
             r = row_start + idx
             g_val = _to_float(ws.cell(row=r, column=7).value)  # G
             h_val = _to_float(ws.cell(row=r, column=8).value)  # H
@@ -276,16 +302,15 @@ class FileGenerate:
                 continue
             total = (g_val or 0.0) * (h_val or 0.0)
             total = self.round_half_up_int(total) 
-            cell_f = ws.cell(row=r, column=6, value=total)  # F
+            ws.cell(row=r, column=6, value=total)  # F
 
         wb.save(output_path)
         return True
 
-
 class DocxFiller:
     """Заполнитель DOCX-документов данными из Excel с поддержкой изображений и веб-поиска ссылок"""
 
-    def __init__(self, openai_api_key="TOKEN"):
+    def __init__(self, openai_api_key="Token"):
         self.api_key = openai_api_key
 
     def get_official_link(self, product_name: str) -> str:
